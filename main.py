@@ -7,11 +7,11 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters, C
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
-# from keep_alive import keep_alive
-# keep_alive()
+from keep_alive import keep_alive
+keep_alive()
 
-from dotenv import load_dotenv
-load_dotenv()
+# from dotenv import load_dotenv
+# load_dotenv()
 
 # Enable logging
 logging.basicConfig(level=logging.INFO)
