@@ -1,6 +1,8 @@
 aiogram==2.23.1
 flask
-requests
+requests~=2.32.3
 apscheduler
-python-dotenv
-python-telegram-bot[job-queue]
+python-dotenv~=1.0.1
+python-telegram-bot[job-queue]~=21.10
+protobuf~=5.29.3
+google-api-python-client~=2.160.0
