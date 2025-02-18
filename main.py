@@ -2,7 +2,7 @@ import os
 import json
 import logging
 import requests
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, ReplyKeyboardRemove
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, ConversationHandler, CallbackQueryHandler, CallbackContext
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
@@ -61,6 +61,8 @@ WAITING_FOR_FILE, WAITING_FOR_PAYMENT, WAITING_FOR_USER = range(3)
 DATA_FILE = "file_data.json"
 # Global variable to store the code fetched from the API.
 code = None
+# Define the cancel button
+CANCEL_BUTTON = "🚫 Cancel"
 
 if os.path.exists(DATA_FILE):
     try:
@@ -91,7 +93,9 @@ def verify_payment(chat_id,payment_amount):
     except requests.exceptions.HTTPError as err:
         print("HTTP Error:", err)
 
-
+# Function to create a reply keyboard with a Cancel button
+def get_cancel_keyboard():
+    return ReplyKeyboardMarkup([[CANCEL_BUTTON]], resize_keyboard=True, one_time_keyboard=True)
 
 # ------------------ Start Command ------------------ #
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -123,14 +127,31 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("There is no information about your report. Please contact Admin @coding_services.")
 
 
+# Add a new function to handle cancellation of the upload process
+async def cancel_upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Cancel the upload process and reset the conversation state."""
+    await update.message.reply_text("Upload process cancelled. You can start over with /upload.")
+    return ConversationHandler.END
 
 async def upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message.chat_id != ADMIN_ID:
         await update.message.reply_text("You are not authorized to use this command.")
         return ConversationHandler.END
-    """ Start the upload process """
-    await update.message.reply_text("Please upload your file.")
+    # Show the Cancel button
+    await update.message.reply_text(
+        "Please upload your file.",
+        reply_markup=get_cancel_keyboard()
+    )
     return WAITING_FOR_FILE
+
+# Handle the Cancel button
+async def handle_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle the Cancel button press."""
+    await update.message.reply_text(
+        "Upload process cancelled.",
+        reply_markup=ReplyKeyboardRemove()  # Remove the custom keyboard
+    )
+    return ConversationHandler.END
 
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """ Handle file upload from users """
@@ -138,7 +159,10 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not document:
         await update.message.reply_text("No document detected. Please try again.")
         return WAITING_FOR_FILE
-
+    sent_message = await update.message.reply_text(
+        "♻️ Uploading Report ....",
+        reply_markup=ReplyKeyboardRemove()  # Remove the keyboard
+    )
     logger.info(f"Received file: {document.file_name}")  # Debugging log
 
     file = await context.bot.get_file(document.file_id)
@@ -154,8 +178,9 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Store file path for later use
     context.user_data["file_path"] = file_path
     context.user_data["file_name"] = document.file_name
-
+    context.job_queue.run_once(delete_message, 0, data=(sent_message.chat.id, sent_message.message_id))
     await update.message.reply_text("💵 Now, enter the payment amount:")
+
     return WAITING_FOR_PAYMENT
 
 async def receive_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -168,6 +193,12 @@ async def receive_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def receive_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global code
+    """ Ensure the entered user ID is an integer """
+    user_id_text = update.message.text.strip()
+
+    if not user_id_text.isdigit():
+        await update.message.reply_text("❌ Invalid User ID! Please enter a numeric User ID.")
+        return WAITING_FOR_USER
     """ Receive user ID and upload file to Google Drive """
     user_id = update.message.text
     file_path = context.user_data.get("file_path")
@@ -178,7 +209,10 @@ async def receive_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("No file found. Please restart with /upload.")
         return ConversationHandler.END
 
-    await update.message.reply_text("♻️ Uploading file to Google Drive...")
+    await update.message.reply_text(
+        "♻️ Uploading file to Google Drive...",
+        reply_markup=ReplyKeyboardRemove()  # Remove the keyboard
+    )
 
     # Upload to Google Drive
     gdrive_link = await upload_to_drive(file_path, file_name)
@@ -330,11 +364,27 @@ def main():
     conv_handler_upload = ConversationHandler(
         entry_points=[CommandHandler("upload", upload)],
         states={
-            WAITING_FOR_FILE: [MessageHandler(filters.Document.ALL, handle_document)],
-            WAITING_FOR_PAYMENT: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_payment)],
-            WAITING_FOR_USER: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_user)],
+            WAITING_FOR_FILE: [
+                MessageHandler(filters.Document.ALL, handle_document),
+                MessageHandler(filters.Text([CANCEL_BUTTON]), handle_cancel),  # Handle Cancel button
+            ],
+            WAITING_FOR_PAYMENT: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, receive_payment),
+                MessageHandler(filters.Text([CANCEL_BUTTON]), handle_cancel),  # Handle Cancel button
+            ],
+            WAITING_FOR_USER: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, receive_user),
+                MessageHandler(filters.Text([CANCEL_BUTTON]), handle_cancel),  # Handle Cancel button
+            ],
         },
-        fallbacks=[],
+        fallbacks=[
+            CommandHandler("start", start),  # Reset conversation if /start is issued
+            CommandHandler("upload", upload),  # Reset conversation if /upload is issued again
+            CommandHandler("help", help_command),  # Reset conversation if /help is issued
+            CommandHandler("show_reports", show_reports),  # Reset conversation if /show_reports is issued
+            CommandHandler("admin_commands", admin_commands),  # Reset conversation if /admin_commands is issued
+            MessageHandler(filters.COMMAND, cancel_upload),  # Reset conversation on any other command
+        ],
     )
 
     application.add_handler(CommandHandler("start", start))
