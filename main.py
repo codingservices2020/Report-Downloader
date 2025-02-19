@@ -23,6 +23,9 @@ GDRIVE_FOLDER_ID = os.getenv("GDRIVE_FOLDER_ID")
 ADMIN_ID = int(os.getenv("ADMIN_ID"))
 PAYMENT_URL = os.getenv('PAYMENT_URL')
 PAYMENT_CAPTURED_DETAILS_URL= os.getenv("PAYMENT_CAPTURED_DETAILS_URL")
+SHORTIO_LINK_API_KEY = os.getenv("SHORTIO_LINK_API_KEY")
+SHORTIO_LINK_URL = os.getenv("SHORTIO_LINK_URL")    # Short.io API Endpoint
+SHORTIO_DOMAIN = os.getenv("SHORTIO_DOMAIN")  # Example: "example.short.io"
 
 # Load Google Drive API Credentials from environment variables
 SERVICE_ACCOUNT_INFO = {
@@ -37,7 +40,7 @@ SERVICE_ACCOUNT_INFO = {
     "auth_provider_x509_cert_url": os.getenv("GOOGLE_AUTH_PROVIDER_CERT"),
     "client_x509_cert_url": os.getenv("GOOGLE_CLIENT_CERT_URL"),
 }
-print(os.getenv("GOOGLE_PRIVATE_KEY"))
+# print(os.getenv("GOOGLE_PRIVATE_KEY"))
 
 # ✅ Debugging: Check if private key is loaded correctly
 if not SERVICE_ACCOUNT_INFO["private_key"].startswith("-----BEGIN PRIVATE KEY-----"):
@@ -63,6 +66,7 @@ DATA_FILE = "file_data.json"
 code = None
 # Define the cancel button
 CANCEL_BUTTON = "🚫 Cancel"
+START_BUTTON = "🤖 Start the Bot"
 
 if os.path.exists(DATA_FILE):
     try:
@@ -93,53 +97,51 @@ def verify_payment(chat_id,payment_amount):
     except requests.exceptions.HTTPError as err:
         print("HTTP Error:", err)
 
+def short_link(long_url, title):
+    # Headers
+    headers = {
+        "Authorization": SHORTIO_LINK_API_KEY,
+        "Content-Type": "application/json"
+    }
+    # Payload
+    data = {"domain": SHORTIO_DOMAIN,
+            "originalURL": long_url,
+            "title": title
+            }
+    response = requests.post(SHORTIO_LINK_URL, json=data, headers=headers)
+    try:
+        response_data = response.json()
+        if "shortURL" in response_data:
+            return response_data["shortURL"]
+        else:
+            return long_url
+    except Exception as e:
+        return long_url
+
+
 # Function to create a reply keyboard with a Cancel button
 def get_cancel_keyboard():
     return ReplyKeyboardMarkup([[CANCEL_BUTTON]], resize_keyboard=True, one_time_keyboard=True)
 
-# ------------------ Start Command ------------------ #
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.message.from_user.id
-    user_id = str(chat_id)
-    # print(f"user id: {user_id}, data type: {type(user_id)}")
+# Function to create a reply keyboard with a Cancel button
+def get_start_keyboard():
+    return ReplyKeyboardMarkup([[START_BUTTON]], resize_keyboard=True, one_time_keyboard=True)
 
-    if user_id in file_data:
-        payment_button_text = f"🚀Make Payment of Rs {file_data[user_id]['amount']}/-🚀"
-        download_button_text = "📥 Download Report"
-
-        payment_button = InlineKeyboardButton(payment_button_text, url=PAYMENT_URL)
-        download_button = InlineKeyboardButton(download_button_text, callback_data=f"download_{user_id}")
-
-        keyboard = [[payment_button], [download_button]]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-
-        await update.message.reply_text(
-            f"*🔰Report Downloader Bot🔰*"
-            f"\n\nTo download your report, follow these two steps:"
-            f"\n 1️⃣ First click on the button below and make the payment."
-            f"\n 2️⃣ After payment download the report."
-            f"\n\n Your User ID: `{user_id}` (tap to copy)\n\n"
-            f"✅ Use this User ID on Razorpay Payment Gateway.",
-            reply_markup=reply_markup,
-            parse_mode="Markdown"
-        )
-    else:
-        await update.message.reply_text("There is no information about your report. Please contact Admin @coding_services.")
 
 
 # Add a new function to handle cancellation of the upload process
 async def cancel_upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Cancel the upload process and reset the conversation state."""
-    await update.message.reply_text("Upload process cancelled. You can start over with /upload.")
+    await update.message.reply_text("⬆️ Upload process cancelled. You can start over with /upload.")
     return ConversationHandler.END
 
 async def upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message.chat_id != ADMIN_ID:
-        await update.message.reply_text("You are not authorized to use this command.")
+        await update.message.reply_text("🚫 You are not authorized to use this command.")
         return ConversationHandler.END
     # Show the Cancel button
     await update.message.reply_text(
-        "Please upload your file.",
+        "⬆️ Please upload your file.",
         reply_markup=get_cancel_keyboard()
     )
     return WAITING_FOR_FILE
@@ -206,7 +208,7 @@ async def receive_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     amount = context.user_data.get("amount")
 
     if not file_path:
-        await update.message.reply_text("No file found. Please restart with /upload.")
+        await update.message.reply_text("🚫 No file found. Please restart with /upload.")
         return ConversationHandler.END
 
     await update.message.reply_text(
@@ -221,22 +223,35 @@ async def receive_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
 
     if gdrive_link:
+        link_title = f"User ID: {user_id}, Amount: Rs {amount}"
+        short_link1 = short_link(gdrive_link, link_title)
+
         file_data[user_id] = {
-            "link": gdrive_link,
+            # "link": gdrive_link,
+            "link": short_link1,
             "amount": amount
         }
         save_data()  # Save the updated data to JSON
 
+
         # Send confirmation
         await update.message.reply_text(f"<b>🔰FILE UPLOADED SUCCESSFULLY!🔰</b>\n\n"
                                         f"✅ <a href='tg://user?id={user_id}'>User</a>'s report successfully uploaded.\n\n"
-                                        f"⬇️ Download Link: {gdrive_link}\n\n",
+                                        # f"⬇️ Download Link: {gdrive_link}\n\n"
+                                       f"⬇️ Download Link: {short_link1}\n\n",
                                         parse_mode="HTML")
         try:
+
+            start_button_text = "🤖 Start the Bot!"
+            start_button = InlineKeyboardButton(start_button_text, callback_data=f"start_{user_id}")
+            keyboard = [[start_button]]
+            reply_markup = InlineKeyboardMarkup(keyboard)
             await context.bot.send_message(
                 chat_id=user_id,
                 text=f"<b>🔰REPORT IS READY🔰</b>\n\n"
-                     f"Type /start and  make the payment of <b>Rs {amount}/-</b> to download your report.", parse_mode="HTML"
+                     f"Start bot and  make the payment of <b>Rs {amount}/-</b> to download your report.",
+                reply_markup=reply_markup,
+                parse_mode="HTML"
             )
         except Exception as e:
             await update.message.reply_text(f"*🔰USER CHAT NOT FOUND!🔰*\n\n"
@@ -247,7 +262,7 @@ async def receive_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return None
 
     else:
-        await update.message.reply_text("❌ Error uploading file to Google Drive.")
+        await update.message.reply_text("🚫 Error uploading file to Google Drive.")
 
     # Delete the local file
     os.remove(file_path)
@@ -270,9 +285,50 @@ async def upload_to_drive(file_path, file_name):
 
 
 
+# ------------------ Start Command ------------------ #
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Check if the update is from a callback query (button press)
+    if update.callback_query:
+        query = update.callback_query
+        await query.answer()  # Acknowledge the button press
+        chat_id = query.from_user.id
+        user_id = str(chat_id)
+        message = query.message  # Use the message from the callback query
+    else:
+        chat_id = update.message.from_user.id
+        user_id = str(chat_id)
+        message = update.message  # Use the message from the regular update
+    if user_id in file_data:
+        payment_button_text = f"🚀Make Payment of Rs {file_data[user_id]['amount']}/-🚀"
+        download_button_text = "📥 Download Report"
+
+        payment_button = InlineKeyboardButton(payment_button_text, url=PAYMENT_URL)
+        download_button = InlineKeyboardButton(download_button_text, callback_data=f"download_{user_id}")
+
+        keyboard = [[payment_button], [download_button]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+
+        await message.reply_text(
+            f"*🔰Report Downloader Bot🔰*"
+            f"\n\nTo download your report, follow these two steps:"
+            f"\n 1️⃣ First click on the button below and make the payment."
+            f"\n 2️⃣ After payment download the report."
+            f"\n\n Your User ID: `{user_id}` (tap to copy)\n\n"
+            f"✅ Use this User ID on Razorpay Payment Gateway.",
+            reply_markup=reply_markup,
+            parse_mode="Markdown"
+        )
+    else:
+        await message.reply_text("🚫 There is no information about your report. Please contact Admin @coding_services.")
+
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()  # Acknowledge the button press
+    # Check if the callback data starts with "start_"
+    if query.data.startswith("start_"):
+        user_id = query.data.replace("start_", "")
+        await start(update, context)  # Call the start function
+        return
 
     user_id = query.data.replace("download_", "")
     sent_message = await query.edit_message_text(f"Payment verifying. Please wait...")
@@ -290,7 +346,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await context.bot.send_message(
                 chat_id=ADMIN_ID,
                 text=f"<b>🔰REPORT DELIVERED🔰</b>\n\n"
-                     f"✅ <a href='tg://user?id={user_id}'>User</a>-generated report download link successfully.\n\n",
+                     f"✅ <a href='tg://user?id={user_id}'>User</a>-generated report's download link successfully.\n\n",
                 parse_mode="HTML"
             )
             DELETED_CODES_URL = f"{PAYMENT_CAPTURED_DETAILS_URL}/amount/{invoice_amount}"
@@ -299,18 +355,22 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             del file_data[user_id]
             save_data()
         else:
+            start_button_text = "🚀Click here to Pay🚀"
+            start_button = InlineKeyboardButton(start_button_text, callback_data=f"start_{user_id}")
+            keyboard = [[start_button]]
+            reply_markup = InlineKeyboardMarkup(keyboard)
             await query.message.reply_text("<b>🔰PAYMENT NOT RECEIVED🔰</b>\n\n"
                                            "We have not received your payment. Please first make the payment then click on Download Report button.\n\n"
-                                           "✅ Need help? Please contact to Admin @coding_services.", parse_mode="HTML")
+                                           "✅ Need help? Please contact to Admin @coding_services.", parse_mode="HTML", reply_markup=reply_markup)
     else:
-        await query.message.reply_text("Your report is not ready. Please wait for some time!")
+        await query.message.reply_text("⭕️ Your report is not ready. Please wait for some time!")
 
 
 # ------------------ Admin Command: Show Users ------------------ #
 async def show_reports(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
     if user_id != ADMIN_ID:
-        await update.message.reply_text("You are not authorized to use this command.")
+        await update.message.reply_text("🚫 You are not authorized to use this command.")
         return
     if not file_data:
         await update.message.reply_text("No active users found.")
@@ -320,7 +380,7 @@ async def show_reports(update: Update, context: ContextTypes.DEFAULT_TYPE):
         for chat_id, details in file_data.items()
     ])
     await update.message.reply_text(
-        f"📜 <b>Not Downloaded  Reports :</b>\n\n{user_list}",
+        f"📜 <b>Not Downloaded Reports :</b>\n\n{user_list}",
         parse_mode="HTML",
         disable_web_page_preview=True
     )
@@ -330,19 +390,6 @@ async def delete_message(context: CallbackContext):
     chat_id, message_id = context.job.data
     await context.bot.delete_message(chat_id=chat_id, message_id=message_id)
 
-# ------------------ New Admin Command: Admin Commands ------------------ #
-async def admin_commands(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.message.from_user.id
-    if user_id != ADMIN_ID:
-        await update.message.reply_text("You are not authorized to use this command.")
-        return
-    await update.message.reply_text(
-        """
-Commands available:
-/upload - Upload report
-/show_reports - Show list of all reports not downloaded by users
-"""
-    )
 
 # ------------------ Help Command ------------------ #
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -350,8 +397,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         """
 Commands available:
 /start - Start the bot to make payment
-/download - Generate your report download
-/admin_commands - Show all commands that only admin can use
+/upload - Upload report
+/show_reports - Show list of all reports not downloaded by users
 /help - Show this help message
 """
     )
@@ -359,6 +406,7 @@ Commands available:
 def main():
     """ Main function to start the bot """
     application = Application.builder().token(TOKEN).build()
+
 
     # Upload file conversation handler
     conv_handler_upload = ConversationHandler(
@@ -382,14 +430,14 @@ def main():
             CommandHandler("upload", upload),  # Reset conversation if /upload is issued again
             CommandHandler("help", help_command),  # Reset conversation if /help is issued
             CommandHandler("show_reports", show_reports),  # Reset conversation if /show_reports is issued
-            CommandHandler("admin_commands", admin_commands),  # Reset conversation if /admin_commands is issued
+            # CommandHandler("admin_commands", admin_commands),  # Reset conversation if /admin_commands is issued
             MessageHandler(filters.COMMAND, cancel_upload),  # Reset conversation on any other command
         ],
     )
 
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("show_reports", show_reports))
-    application.add_handler(CommandHandler("admin_commands", admin_commands))
+    # application.add_handler(CommandHandler("admin_commands", admin_commands))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(conv_handler_upload)
     application.add_handler(CallbackQueryHandler(button_handler))
