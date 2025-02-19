@@ -376,7 +376,7 @@ async def show_reports(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("No active users found.")
         return
     user_list = "\n".join([
-        f"👤 <a href='tg://user?id={chat_id}'>User ID: {chat_id}</a> \nRport Link: {details['link']}\n\n"
+        f"👤 <a href='tg://user?id={chat_id}'>User ID: {chat_id}</a> \n🔗 Report Link: {details['link']}\n\n"
         for chat_id, details in file_data.items()
     ])
     await update.message.reply_text(
