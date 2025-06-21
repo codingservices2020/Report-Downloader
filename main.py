@@ -7,11 +7,11 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters, C
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
-from keep_alive import keep_alive
-keep_alive()
+# from keep_alive import keep_alive
+# keep_alive()
 
-# from dotenv import load_dotenv
-# load_dotenv()
+from dotenv import load_dotenv
+load_dotenv()
 
 # Enable logging
 logging.basicConfig(level=logging.INFO)
@@ -294,12 +294,13 @@ async def receive_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     }
     save_data()
 
+    links_formatted = "\n".join([f"📥 File {i + 1}: {link}" for i, link in enumerate(file_data[user_id]["links"])])
     # Send confirmation
     await update.message.reply_text(f"<b>🔰FILE UPLOADED SUCCESSFULLY!🔰</b>\n\n"
                                     f"✅ <a href='tg://user?id={user_id}'>User</a>'s report successfully uploaded.\n\n"
                                     # f"⬇️ Download Link: {gdrive_link}\n\n"
                                    # f"⬇️ Download Link: {short_links}\n\n",
-    f"<b>⬇️ Report Download Links:</b>\n {"\n".join([f"📥 File {i + 1}: {link}" for i, link in enumerate(file_data[user_id]["links"])])}",
+                                    f"<b>⬇️ Report Download Links:</b>\n{links_formatted}",
                                     parse_mode="HTML")
     try:
 
@@ -395,11 +396,13 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if user_id in file_data:
         invoice_amount = int(file_data[user_id]['amount'])
         if verify_payment(user_id, invoice_amount):
+            links_formatted = "\n".join(
+                [f"📥 File {i + 1}: {link}" for i, link in enumerate(file_data[user_id]["links"])])
             await query.message.reply_text(
                 f"<b>🔰PAYMENT VERIFIED🔰</b>\n\n"
                 f"🙏Thank you for making the payment.\n\n"
                 f"✅ Download your report by clicking on the link below.\n\n"
-                f"<b>⬇️ Report Download Links:</b>\n {"\n".join([f"📥 File {i+1}: {link}" for i, link in enumerate(file_data[user_id]["links"])])}",
+                f"<b>⬇️ Report Download Links:</b>\n{links_formatted}",
                 parse_mode="HTML"
             )
             context.job_queue.run_once(delete_message, 0, data=(sent_message.chat.id, sent_message.message_id))
