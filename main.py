@@ -19,6 +19,7 @@ logger = logging.getLogger(__name__)
 
 # Load environment variables
 TOKEN = os.getenv("TOKEN")
+URL = f'https://api.telegram.org/bot{TOKEN}/getUpdates'
 GDRIVE_FOLDER_ID = os.getenv("GDRIVE_FOLDER_ID")
 ADMIN_ID = int(os.getenv("ADMIN_ID"))
 PAYMENT_URL = os.getenv('PAYMENT_URL')
@@ -58,7 +59,9 @@ creds = Credentials.from_service_account_info(SERVICE_ACCOUNT_INFO, scopes=SCOPE
 drive_service = build('drive', 'v3', credentials=creds)
 
 # Define states for conversation handler
-WAITING_FOR_FILE, WAITING_FOR_PAYMENT, WAITING_FOR_USER = range(3)
+WAITING_FOR_UPLOAD_OPTION, WAITING_FOR_MULTIPLE_FILES, COLLECTING_FILES = range(100, 103)
+WAITING_FOR_PAYMENT, WAITING_FOR_USER = range(103, 105)
+
 
 # Load existing file data or initialize an empty dictionary
 DATA_FILE = "file_data.json"
@@ -90,7 +93,7 @@ def verify_payment(chat_id,payment_amount):
         response.raise_for_status()
         data = response.json()
         for entry in data:
-            if entry['user_Id'] == str(chat_id):
+            if entry['user_id'] == str(chat_id):
                 if entry['amount'] == str(payment_amount):
                     return True
         print("No payment details found! ")
@@ -139,12 +142,16 @@ async def upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message.chat_id != ADMIN_ID:
         await update.message.reply_text("🚫 You are not authorized to use this command.")
         return ConversationHandler.END
-    # Show the Cancel button
-    await update.message.reply_text(
-        "⬆️ Please upload your file.",
-        reply_markup=get_cancel_keyboard()
-    )
-    return WAITING_FOR_FILE
+    await update.message.reply_text("♻️ Upload Process has Started...", reply_markup=get_cancel_keyboard(),parse_mode="Markdown")
+
+    keyboard = [
+        [InlineKeyboardButton("📁 One File", callback_data="upload_1")],
+        [InlineKeyboardButton("📂 Two Files", callback_data="upload_2")],
+        [InlineKeyboardButton("📦 More than Two Files", callback_data="upload_more")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.message.reply_text("How many files do you want to upload?", reply_markup=reply_markup)
+    return WAITING_FOR_UPLOAD_OPTION
 
 # Handle the Cancel button
 async def handle_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -155,12 +162,62 @@ async def handle_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     return ConversationHandler.END
 
+async def upload_option_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    context.user_data["files"] = []
+    if query.data == "upload_1":
+        context.user_data["upload_limit"] = 1
+        await query.edit_message_text("📤 Please send 1 file.")
+        return COLLECTING_FILES
+    elif query.data == "upload_2":
+        context.user_data["upload_limit"] = 2
+        await query.edit_message_text("📤 Please send 2 files.")
+        return COLLECTING_FILES
+    else:
+        await query.edit_message_text("✳️ Please enter how many files you want to upload (must be a number > 2):")
+        return WAITING_FOR_MULTIPLE_FILES
+
+async def ask_file_count(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_input = update.message.text.strip()
+    if not user_input.isdigit() or int(user_input) <= 2:
+        await update.message.reply_text("❌ Please enter a number greater than 2.")
+        return WAITING_FOR_MULTIPLE_FILES
+
+    context.user_data["upload_limit"] = int(user_input)
+    await update.message.reply_text(f"📤 Please send {user_input} files one by one.")
+    return COLLECTING_FILES
+
+
+async def handle_multiple_files(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    document = update.message.document
+    if not document:
+        await update.message.reply_text("Please send a valid file.")
+        return COLLECTING_FILES
+
+    file = await context.bot.get_file(document.file_id)
+    os.makedirs("downloads", exist_ok=True)
+    file_path = f"downloads/{document.file_name}"
+    await file.download_to_drive(file_path)
+
+    context.user_data["files"].append((file_path, document.file_name))
+
+    if len(context.user_data["files"]) >= context.user_data["upload_limit"]:
+        await update.message.reply_text("✅ All files received. Now enter payment amount:")
+        return WAITING_FOR_PAYMENT
+
+    await update.message.reply_text(f"📒 File *{document.file_name}* received. Send next file...,", parse_mode="Markdown")
+    return COLLECTING_FILES
+
+
+
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """ Handle file upload from users """
     document = update.message.document
     if not document:
         await update.message.reply_text("No document detected. Please try again.")
-        return WAITING_FOR_FILE
+        return WAITING_FOR_UPLOAD_OPTION
     sent_message = await update.message.reply_text(
         "♻️ Uploading Report ....",
         reply_markup=ReplyKeyboardRemove()  # Remove the keyboard
@@ -198,17 +255,18 @@ async def receive_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """ Ensure the entered user ID is an integer """
     user_id_text = update.message.text.strip()
 
-    if not user_id_text.isdigit():
-        await update.message.reply_text("❌ Invalid User ID! Please enter a numeric User ID.")
+    if not user_id_text.isdigit() or not (100000000 <= int(user_id_text) <= 9999999999):
+        await update.message.reply_text("❌ Please enter a valid Telegram User ID (7–10 digits).")
         return WAITING_FOR_USER
+
     """ Receive user ID and upload file to Google Drive """
     user_id = update.message.text
     file_path = context.user_data.get("file_path")
     file_name = context.user_data.get("file_name")
     amount = context.user_data.get("amount")
 
-    if not file_path:
-        await update.message.reply_text("🚫 No file found. Please restart with /upload.")
+    if "files" not in context.user_data or not context.user_data["files"]:
+        await update.message.reply_text("🚫 No files found. Please restart with /upload.")
         return ConversationHandler.END
 
     await update.message.reply_text(
@@ -217,52 +275,54 @@ async def receive_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
     # Upload to Google Drive
-    gdrive_link = await upload_to_drive(file_path, file_name)
-    if not gdrive_link:
-        await update.message.reply_text("❌ Error uploading file to Google Drive.")
+    links = []
+    for path, name in context.user_data["files"]:
+        gdrive_link = await upload_to_drive(path, name)
+        if gdrive_link:
+            links.append(gdrive_link)
+
+    if not links:
+        await update.message.reply_text("❌ Error uploading files to Google Drive.")
         return ConversationHandler.END
 
-    if gdrive_link:
-        link_title = f"User ID: {user_id}, Amount: Rs {amount}"
-        short_link1 = short_link(gdrive_link, link_title)
+    # (Optional) Send multiple links or store them together
+    short_links = [short_link(link, f"{user_id}-{i + 1}") for i, link in enumerate(links)]
 
-        file_data[user_id] = {
-            # "link": gdrive_link,
-            "link": short_link1,
-            "amount": amount
-        }
-        save_data()  # Save the updated data to JSON
+    file_data[user_id] = {
+        "links": short_links,
+        "amount": amount
+    }
+    save_data()
 
+    # Send confirmation
+    await update.message.reply_text(f"<b>🔰FILE UPLOADED SUCCESSFULLY!🔰</b>\n\n"
+                                    f"✅ <a href='tg://user?id={user_id}'>User</a>'s report successfully uploaded.\n\n"
+                                    # f"⬇️ Download Link: {gdrive_link}\n\n"
+                                   # f"⬇️ Download Link: {short_links}\n\n",
+    f"<b>⬇️ Report Download Links:</b>\n {"\n".join([f"📥 File {i + 1}: {link}" for i, link in enumerate(file_data[user_id]["links"])])}",
+                                    parse_mode="HTML")
+    try:
 
-        # Send confirmation
-        await update.message.reply_text(f"<b>🔰FILE UPLOADED SUCCESSFULLY!🔰</b>\n\n"
-                                        f"✅ <a href='tg://user?id={user_id}'>User</a>'s report successfully uploaded.\n\n"
-                                        # f"⬇️ Download Link: {gdrive_link}\n\n"
-                                       f"⬇️ Download Link: {short_link1}\n\n",
-                                        parse_mode="HTML")
-        try:
-
-            start_button_text = "🤖 Start the Bot!"
-            start_button = InlineKeyboardButton(start_button_text, callback_data=f"start_{user_id}")
-            keyboard = [[start_button]]
-            reply_markup = InlineKeyboardMarkup(keyboard)
-            await context.bot.send_message(
-                chat_id=user_id,
-                text=f"<b>🔰REPORT IS READY🔰</b>\n\n"
-                     f"Start bot and  make the payment of <b>Rs {amount}/-</b> to download your report.",
-                reply_markup=reply_markup,
-                parse_mode="HTML"
-            )
-        except Exception as e:
-            await update.message.reply_text(f"*🔰USER CHAT NOT FOUND!🔰*\n\n"
-                                            f"Message is not send to user. \n"
-                                            f"Tell user to send a message to this bot, otherwise send the message to user manually.",
-                                            parse_mode="Markdown")
-            logger.error(f"Can't send message to user: {e}")
-            return None
-
+        start_button_text = "🤖 Start the Bot!"
+        start_button = InlineKeyboardButton(start_button_text, callback_data=f"start_{user_id}")
+        keyboard = [[start_button]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await context.bot.send_message(
+            chat_id=user_id,
+            text=f"<b>🔰REPORT IS READY🔰</b>\n\n"
+                 f"Start bot and  make the payment of <b>Rs {amount}/-</b> to download your report.",
+            reply_markup=reply_markup,
+            parse_mode="HTML"
+        )
+    except Exception as e:
+        await update.message.reply_text(f"*🔰USER CHAT NOT FOUND!🔰*\n\n"
+                                        f"Message is not send to user. \n"
+                                        f"Tell user to send a message to this bot, otherwise send the message to user manually.",
+                                        parse_mode="Markdown")
+        logger.error(f"Can't send message to user: {e}")
+        return None
     else:
-        await update.message.reply_text("🚫 Error uploading file to Google Drive.")
+        return None
 
     # Delete the local file
     os.remove(file_path)
@@ -339,7 +399,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"<b>🔰PAYMENT VERIFIED🔰</b>\n\n"
                 f"🙏Thank you for making the payment.\n\n"
                 f"✅ Download your report by clicking on the link below.\n\n"
-                f"<b>⬇️ Link:</b> {file_data[user_id]['link']}",
+                f"<b>⬇️ Report Download Links:</b>\n {"\n".join([f"📥 File {i+1}: {link}" for i, link in enumerate(file_data[user_id]["links"])])}",
                 parse_mode="HTML"
             )
             context.job_queue.run_once(delete_message, 0, data=(sent_message.chat.id, sent_message.message_id))
@@ -372,18 +432,66 @@ async def show_reports(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if user_id != ADMIN_ID:
         await update.message.reply_text("🚫 You are not authorized to use this command.")
         return
+
     if not file_data:
-        await update.message.reply_text("No active users found.")
+        await update.message.reply_text("📭 No pending reports found.")
         return
-    user_list = "\n".join([
-        f"👤 <a href='tg://user?id={chat_id}'>User ID: {chat_id}</a> \n🔗 Report Link: {details['link']}\n\n"
-        for chat_id, details in file_data.items()
-    ])
+
+    messages = []
+    for chat_id, details in file_data.items():
+        user_link = f"<a href='tg://user?id={chat_id}'>User ID: {chat_id}</a>"
+        amount = details.get("amount", "N/A")
+        links = details.get("links", [])
+
+        if links:
+            link_lines = "\n".join([f"📥 File {i + 1}: {link}" for i, link in enumerate(links)])
+        else:
+            link_lines = "🔗 No links found."
+
+        messages.append(f"{user_link}\n💰 Amount: Rs {amount}\n{link_lines}\n")
+
+    final_report = "\n\n".join(messages)
     await update.message.reply_text(
-        f"📜 <b>Not Downloaded Reports :</b>\n\n{user_list}",
+        f"📜 <b>Not Downloaded Reports:</b>\n\n{final_report}",
         parse_mode="HTML",
         disable_web_page_preview=True
     )
+
+async def handle_forwarded_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    message = update.message
+    print(message)
+    if not message or not hasattr(message, 'forward_origin'):
+        return
+
+    origin = message.forward_origin
+    print(origin)
+
+    # Case 1: Forwarded from a visible user
+    if origin.type.name == "USER" and hasattr(origin, "sender_user"):
+        user = origin.sender_user
+        print(user)
+        full_name = f"{user.first_name} {user.last_name or ''}".strip()
+        username = f"@{user.username}" if user.username else "No username"
+        chat_id = user.id
+
+        await message.reply_text(
+            f"👤 <b>Forwarded User Info</b>\n\n"
+            f"🧾 Name: {full_name}\n"
+            f"🔗 Username: {username}\n"
+            f"🆔 User ID: <code>{chat_id}</code>",
+            parse_mode="HTML"
+        )
+
+    # Case 2: Forwarded from a hidden user
+    elif origin.type.name == "HIDDEN_USER" and hasattr(origin, "sender_user_name"):
+        print(origin.type)
+        await message.reply_text(
+            f"🚫 Forwarded from a user with privacy enabled.\n\n"
+            f"🔗 User's Telegram Name: {origin.sender_user_name}",
+            parse_mode="HTML"
+        )
+    else:
+        await message.reply_text("⚠️ Unable to identify forwarded user.")
 
 # ------------------ Delete Message Function ------------------ #
 async def delete_message(context: CallbackContext):
@@ -396,7 +504,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         """
 Commands available:
-/start - Start the bot to make payment
+/start - Check whether your report is ready or not
 /upload - Upload report
 /show_reports - Show list of all reports not downloaded by users
 /help - Show this help message
@@ -412,8 +520,16 @@ def main():
     conv_handler_upload = ConversationHandler(
         entry_points=[CommandHandler("upload", upload)],
         states={
-            WAITING_FOR_FILE: [
-                MessageHandler(filters.Document.ALL, handle_document),
+            WAITING_FOR_UPLOAD_OPTION: [
+                CallbackQueryHandler(upload_option_handler),
+                MessageHandler(filters.Text([CANCEL_BUTTON]), handle_cancel),  # Handle Cancel button
+            ],
+            WAITING_FOR_MULTIPLE_FILES: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, ask_file_count),
+                MessageHandler(filters.Text([CANCEL_BUTTON]), handle_cancel),  # Handle Cancel button
+            ],
+            COLLECTING_FILES: [
+                MessageHandler(filters.Document.ALL, handle_multiple_files),
                 MessageHandler(filters.Text([CANCEL_BUTTON]), handle_cancel),  # Handle Cancel button
             ],
             WAITING_FOR_PAYMENT: [
@@ -441,6 +557,8 @@ def main():
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(conv_handler_upload)
     application.add_handler(CallbackQueryHandler(button_handler))
+    application.add_handler(MessageHandler(filters.FORWARDED, handle_forwarded_message))
+
 
     application.run_polling()
 
