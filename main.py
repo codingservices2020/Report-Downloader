@@ -2,6 +2,7 @@ import os
 import json
 import logging
 import requests
+from firebase_db import save_report_links, load_report_links, remove_report_links
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, ReplyKeyboardRemove
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, ConversationHandler, CallbackQueryHandler, CallbackContext
 from google.oauth2.service_account import Credentials
@@ -68,6 +69,7 @@ WAITING_FOR_DELETE_ID = 105
 
 # Load existing file data or initialize an empty dictionary
 DATA_FILE = "file_data.json"
+report_links = {}
 # Global variable to store the code fetched from the API.
 code = None
 # Define the cancel button
@@ -78,17 +80,17 @@ if os.path.exists(DATA_FILE):
     try:
         with open(DATA_FILE, "r") as f:
             file_content = f.read().strip()  # Remove any accidental empty spaces
-            file_data = json.loads(file_content) if file_content else {}
+            report_links = json.loads(file_content) if file_content else {}
     except json.JSONDecodeError:
         print("Warning: JSON file is corrupted. Resetting data.")
-        file_data = {}
+        report_links = {}
 else:
-    file_data = {}
+    report_links = {}
 
 def save_data():
     """Save the file data to JSON."""
     with open(DATA_FILE, "w") as f:
-        json.dump(file_data, f, indent=4)
+        json.dump(report_links, f, indent=4)
 
 def verify_payment(chat_id,payment_amount):
     response = requests.get(url=PAYMENT_CAPTURED_DETAILS_URL)
@@ -291,13 +293,12 @@ async def receive_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # (Optional) Send multiple links or store them together
     short_links = [short_link(link, f"{user_id}-{i + 1}") for i, link in enumerate(links)]
 
-    file_data[user_id] = {
-        "links": short_links,
-        "amount": amount
-    }
-    save_data()
+    save_report_links(user_id, amount, short_links)  # Saving data online
+    # Refresh subscriptions from Firestore
+    global report_links
+    report_links = load_report_links()  # Refresh from Firebase
 
-    links_formatted = "\n".join([f"📥 File {i + 1}: {link}" for i, link in enumerate(file_data[user_id]["links"])])
+    links_formatted = "\n".join([f"📥 File {i + 1}: {link}" for i, link in enumerate(report_links[user_id]["links"])])
     # Send confirmation
     await update.message.reply_text(f"<b>🔰FILE UPLOADED SUCCESSFULLY!🔰</b>\n\n"
                                     f"✅ <a href='tg://user?id={user_id}'>User</a>'s report successfully uploaded.\n\n"
@@ -362,8 +363,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         chat_id = update.message.from_user.id
         user_id = str(chat_id)
         message = update.message  # Use the message from the regular update
-    if user_id in file_data:
-        payment_button_text = f"🚀Make Payment of Rs {file_data[user_id]['amount']}/-🚀"
+    if user_id in report_links:
+        payment_button_text = f"🚀Make Payment of Rs {report_links[user_id]['amount']}/-🚀"
         download_button_text = "📥 Download Report"
 
         payment_button = InlineKeyboardButton(payment_button_text, url=PAYMENT_URL)
@@ -396,11 +397,13 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     user_id = query.data.replace("download_", "")
     sent_message = await query.edit_message_text(f"Payment verifying. Please wait...")
-    if user_id in file_data:
-        invoice_amount = int(file_data[user_id]['amount'])
+    report_links = load_report_links() # Refresh from Firebase
+    if user_id in report_links:
+        invoice_amount = int(report_links[user_id]['amount'])
         if verify_payment(user_id, invoice_amount):
+
             links_formatted = "\n".join(
-                [f"📥 File {i + 1}: {link}" for i, link in enumerate(file_data[user_id]["links"])])
+                [f"📥 File {i + 1}: {link}" for i, link in enumerate(report_links[user_id]["links"])])
             await query.message.reply_text(
                 f"<b>🔰PAYMENT VERIFIED🔰</b>\n\n"
                 f"🙏Thank you for making the payment.\n\n"
@@ -418,8 +421,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             DELETED_CODES_URL = f"{PAYMENT_CAPTURED_DETAILS_URL}/amount/{invoice_amount}"
             requests.delete(url=DELETED_CODES_URL)
 
-            del file_data[user_id]
-            save_data()
+            remove_report_links(user_id)
+            load_report_links()  # Refresh from Firebase
         else:
             start_button_text = "🚀Click here to Pay🚀"
             start_button = InlineKeyboardButton(start_button_text, callback_data=f"start_{user_id}")
@@ -439,13 +442,14 @@ async def show_reports(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("🚫 You are not authorized to use this command.")
         return
 
-    if not file_data:
+    report_links = load_report_links()  # Refresh from Firebase
+    if not report_links:
         await update.message.reply_text("📭 No pending reports found.")
         return
 
     messages = []
-    for chat_id, details in file_data.items():
-        user_link = f"<a href='tg://user?id={chat_id}'>User ID: {chat_id}</a>"
+    for chat_id, details in report_links.items():
+        user_link = f"User ID:<a href='tg://user?id={chat_id}'>{chat_id}</a>"
         amount = details.get("amount", "N/A")
         links = details.get("links", [])
 
@@ -467,9 +471,11 @@ async def show_reports(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def delete_user_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.text.strip()
-    if user_id in file_data:
-        del file_data[user_id]
-        save_data()
+    print(f"1. user_id;{type(user_id)}")
+    report_links = load_report_links()  # Refresh from Firebase
+    if user_id in report_links:
+        remove_report_links(user_id)
+        load_report_links()  # Refresh from Firebase
         await update.message.reply_text(f"🗑️ Report data for user ID {user_id} has been deleted.")
     else:
         await update.message.reply_text(f"⚠️ No data found for user ID {user_id}.")
