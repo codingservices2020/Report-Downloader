@@ -67,15 +67,3 @@ def remove_report_links(user_id):
             db.collection(DB_FILE_NAME).document(user.id).delete()
 
 
-# user_id = "736328237"
-# remove_report_links(user_id)
-
-
-#
-# # print(load_report_links())
-# users_ref = db.collection(DB_FILE_NAME).stream()
-# for user in users_ref:
-#     data = user.to_dict()
-#     print(data)
-#     print(user.id)
-
