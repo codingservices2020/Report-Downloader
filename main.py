@@ -7,12 +7,14 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters, C
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
+import warnings
 from keep_alive import keep_alive
 keep_alive()
 
 # from dotenv import load_dotenv
 # load_dotenv()
 
+warnings.filterwarnings("ignore", category=DeprecationWarning)
 # Enable logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -61,6 +63,7 @@ drive_service = build('drive', 'v3', credentials=creds)
 # Define states for conversation handler
 WAITING_FOR_UPLOAD_OPTION, WAITING_FOR_MULTIPLE_FILES, COLLECTING_FILES = range(100, 103)
 WAITING_FOR_PAYMENT, WAITING_FOR_USER = range(103, 105)
+WAITING_FOR_DELETE_ID = 105
 
 
 # Load existing file data or initialize an empty dictionary
@@ -455,10 +458,23 @@ async def show_reports(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     final_report = "\n\n".join(messages)
     await update.message.reply_text(
-        f"📜 <b>Not Downloaded Reports:</b>\n\n{final_report}",
+        f"📜 <b>Not Downloaded Reports:</b>\n\n{final_report}\n"
+        f"✂️ <b>To delete a report, send the User ID now.</b>",
         parse_mode="HTML",
         disable_web_page_preview=True
     )
+    return WAITING_FOR_DELETE_ID
+
+async def delete_user_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.message.text.strip()
+    if user_id in file_data:
+        del file_data[user_id]
+        save_data()
+        await update.message.reply_text(f"🗑️ Report data for user ID {user_id} has been deleted.")
+    else:
+        await update.message.reply_text(f"⚠️ No data found for user ID {user_id}.")
+    return ConversationHandler.END
+
 
 async def handle_forwarded_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.message
@@ -548,17 +564,27 @@ def main():
             CommandHandler("start", start),  # Reset conversation if /start is issued
             CommandHandler("upload", upload),  # Reset conversation if /upload is issued again
             CommandHandler("help", help_command),  # Reset conversation if /help is issued
-            CommandHandler("show_reports", show_reports),  # Reset conversation if /show_reports is issued
             # CommandHandler("admin_commands", admin_commands),  # Reset conversation if /admin_commands is issued
             MessageHandler(filters.COMMAND, cancel_upload),  # Reset conversation on any other command
         ],
     )
 
+    # Delete links conversation handler
+    conv_handler_delete = ConversationHandler(
+        entry_points=[CommandHandler("show_reports", show_reports)],
+        states={
+            WAITING_FOR_DELETE_ID: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, delete_user_report)
+            ]
+        },
+        fallbacks=[CommandHandler("cancel", cancel_upload)],
+    )
+
     application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("show_reports", show_reports))
     # application.add_handler(CommandHandler("admin_commands", admin_commands))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(conv_handler_upload)
+    application.add_handler(conv_handler_delete)
     application.add_handler(CallbackQueryHandler(button_handler))
     application.add_handler(MessageHandler(filters.FORWARDED, handle_forwarded_message))
 
