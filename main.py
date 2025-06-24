@@ -9,11 +9,11 @@ from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 import warnings
-from keep_alive import keep_alive
-keep_alive()
+# from keep_alive import keep_alive
+# keep_alive()
 
-# from dotenv import load_dotenv
-# load_dotenv()
+from dotenv import load_dotenv
+load_dotenv()
 
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 # Enable logging
@@ -518,6 +518,21 @@ async def handle_forwarded_message(update: Update, context: ContextTypes.DEFAULT
     else:
         await message.reply_text("⚠️ Unable to identify forwarded user.")
 
+async def user_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.message.from_user
+    full_name = f"{user.first_name} {user.last_name or ''}".strip()
+    username = f"@{user.username}" if user.username else "No username"
+    user_id = user.id
+
+    await update.message.reply_text(
+        f"👤 <b>User Info</b>\n\n"
+        f"🧾 Name: {full_name}\n"
+        f"🔗 Username: {username}\n"
+        f"🆔 User ID: <code>{user_id}</code>",
+        parse_mode="HTML"
+    )
+
+
 # ------------------ Delete Message Function ------------------ #
 async def delete_message(context: CallbackContext):
     chat_id, message_id = context.job.data
@@ -587,6 +602,7 @@ def main():
     )
 
     application.add_handler(CommandHandler("start", start))
+    application.add_handler(MessageHandler(filters.TEXT & filters.Regex(r'^(hi|Hi|hello|Hello)$'), user_info))
     # application.add_handler(CommandHandler("admin_commands", admin_commands))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(conv_handler_upload)
