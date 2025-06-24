@@ -524,8 +524,9 @@ async def user_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
     username = f"@{user.username}" if user.username else "No username"
     user_id = user.id
 
-    await update.message.reply_text(
-        f"👤 <b>User Info</b>\n\n"
+    await context.bot.send_message(
+        chat_id=ADMIN_ID,
+        text=f"👤 <b>User Info</b>\n\n"
         f"🧾 Name: {full_name}\n"
         f"🔗 Username: {username}\n"
         f"🆔 User ID: <code>{user_id}</code>",
