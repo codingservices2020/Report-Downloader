@@ -575,8 +575,6 @@ async def handle_user_search(update: Update, context: ContextTypes.DEFAULT_TYPE)
             ),
             parse_mode="HTML"
         )
-
-    await update.message.reply_text("✅ Search result sent to admin.")
     return ConversationHandler.END
 
 
