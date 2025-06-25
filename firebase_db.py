@@ -42,7 +42,6 @@ def save_report_links(user_id, amount, links):
         "links": links,
     })
 
-
 def load_report_links():
     """Load all subscriptions from Firestore, safely handling errors"""
     try:
@@ -66,4 +65,31 @@ def remove_report_links(user_id):
         if str(user_id) == user.id:
             db.collection(DB_FILE_NAME).document(user.id).delete()
 
+###################################################################################
 
+def save_user_data(user_id, name, username):
+    """Save each user as its own document inside 'user_data' sub-collection"""
+    # doc_ref = db.collection(DB_FILE_NAME).document("bot_data").collection("users_data").document(str(user_id))
+    doc_ref = db.collection("Reports_Download_users_data").document(str(user_id))
+    doc_ref.set({
+        "name": name,
+        "username": username
+    })
+
+def search_user_id(search_term):
+    """Search user by name or username in subcollection 'user_data/users'"""
+    # users_ref = db.collection(DB_FILE_NAME).document("bot_data").collection("users_data").stream()
+    users_ref = db.collection("Reports_Download_users_data").stream()
+    results = []
+
+    for doc in users_ref:
+        data = doc.to_dict()
+        if (search_term.lower() in (data.get("name") or "").lower()) or \
+           (search_term.lower() in (data.get("username") or "").lower()):
+            results.append((doc.id, data))
+
+    if not results:
+        print(f"No user found matching '{search_term}'")
+        return None
+    else:
+        return results
