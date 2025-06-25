@@ -2,18 +2,18 @@ import os
 import json
 import logging
 import requests
-from firebase_db import save_report_links, load_report_links, remove_report_links
+from firebase_db import save_report_links, load_report_links, remove_report_links, save_user_data, search_user_id
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, ReplyKeyboardRemove
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, ConversationHandler, CallbackQueryHandler, CallbackContext
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 import warnings
-from keep_alive import keep_alive
-keep_alive()
+# from keep_alive import keep_alive
+# keep_alive()
 
-# from dotenv import load_dotenv
-# load_dotenv()
+from dotenv import load_dotenv
+load_dotenv()
 
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 # Enable logging
@@ -65,6 +65,8 @@ drive_service = build('drive', 'v3', credentials=creds)
 WAITING_FOR_UPLOAD_OPTION, WAITING_FOR_MULTIPLE_FILES, COLLECTING_FILES = range(100, 103)
 WAITING_FOR_PAYMENT, WAITING_FOR_USER = range(103, 105)
 WAITING_FOR_DELETE_ID = 105
+WAITING_FOR_SEARCH_INPUT = 106  # 🔍 New state for search
+
 
 
 # Load existing file data or initialize an empty dictionary
@@ -484,7 +486,11 @@ async def delete_user_report(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 async def handle_forwarded_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.message
-    print(message)
+    user_id = update.message.from_user.id
+    if user_id != ADMIN_ID:
+        await update.message.reply_text("🚫 You are not authorized to use this command.")
+        return
+
     if not message or not hasattr(message, 'forward_origin'):
         return
 
@@ -518,17 +524,19 @@ async def handle_forwarded_message(update: Update, context: ContextTypes.DEFAULT
     else:
         await message.reply_text("⚠️ Unable to identify forwarded user.")
 
+# ------------------ Send user info to admin when he/she send "Hi" or "hi" ------------------ #
 async def user_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.message.from_user
     full_name = f"{user.first_name} {user.last_name or ''}".strip()
     username = f"@{user.username}" if user.username else "No username"
     user_id = user.id
+    save_user_data(user_id, full_name, username)
 
     await update.message.reply_text(f"🔰*THANK YOU!*🔰\n\n"
-                                    f"I'll inform you as report is ready.",
+                                    f"I'll inform you as soon as the report is ready.",
                                     parse_mode="Markdown"
     )
-    
+
     await context.bot.send_message(
         chat_id=ADMIN_ID,
         text=f"👤 <b>User Info</b>\n\n"
@@ -537,6 +545,39 @@ async def user_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"🆔 User ID: <code>{user_id}</code>",
         parse_mode="HTML"
     )
+
+# ------------------ Search User ID ------------------ #
+async def request_user_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.message.from_user.id
+    if user_id != ADMIN_ID:
+        await update.message.reply_text("🚫 You are not authorized to use this command.")
+        return
+
+    await update.message.reply_text("🔍 Please enter the name or username of the user you want to search:")
+    return WAITING_FOR_SEARCH_INPUT
+
+async def handle_user_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.message.text.strip()
+    results = search_user_id(query)
+
+    if not results:
+        await update.message.reply_text(f"❌ No user found for: {query}")
+        return ConversationHandler.END
+
+    for user_id, data in results:
+        await context.bot.send_message(
+            chat_id=ADMIN_ID,
+            text=(
+                f"🔍 <b>Search Result</b>\n\n"
+                f"🆔 User ID: <code>{user_id}</code>\n"
+                f"🧾 Name: {data.get('name')}\n"
+                f"🔗 Username: {data.get('username')}"
+            ),
+            parse_mode="HTML"
+        )
+
+    await update.message.reply_text("✅ Search result sent to admin.")
+    return ConversationHandler.END
 
 
 # ------------------ Delete Message Function ------------------ #
@@ -551,8 +592,9 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         """
 Commands available:
 /start - Check whether your report is ready or not
-/upload - Upload report
-/show_reports - Show list of all reports not downloaded by users
+/upload - Upload report (Admin only)
+/show_reports - Show list of all reports not downloaded by users (Admin only)
+/search_user - Search user by name or username (Admin only)
 /help - Show this help message
 """
     )
@@ -606,6 +648,20 @@ def main():
         },
         fallbacks=[CommandHandler("cancel", cancel_upload)],
     )
+
+    # Search user conversation
+    conv_handler_search = ConversationHandler(
+        entry_points=[CommandHandler("search_user", request_user_search)],
+        states={
+            WAITING_FOR_SEARCH_INPUT: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_user_search)
+            ]
+        },
+        fallbacks=[CommandHandler("cancel", cancel_upload)],
+    )
+
+    application.add_handler(conv_handler_search)
+
 
     application.add_handler(CommandHandler("start", start))
     application.add_handler(MessageHandler(filters.TEXT & filters.Regex(r'^(hi|Hi|hello|Hello)$'), user_info))
