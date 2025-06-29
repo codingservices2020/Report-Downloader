@@ -76,6 +76,21 @@ def save_user_data(user_id, name, username):
         "username": username
     })
 
+def load_user_data():
+    """Load all subscriptions from Firestore, safely handling errors"""
+    try:
+        users_ref = db.collection("Reports_Download_users_data").stream()
+        return {
+            user.id: {
+                "name": user.to_dict().get("name", "Unknown"),
+                "username": user.to_dict().get("username", "Unknown"),
+            }
+            for user in users_ref
+        }
+    except Exception as e:
+        print(f"Firestore Error: {e}")
+        return {}  # Return empty dict instead of crashing
+
 def search_user_id(search_term):
     """Search user by name or username in subcollection 'user_data/users'"""
     # users_ref = db.collection(DB_FILE_NAME).document("bot_data").collection("users_data").stream()
