@@ -2,7 +2,7 @@ import os
 import json
 import logging
 import requests
-from firebase_db import save_report_links, load_report_links, remove_report_links, save_user_data, search_user_id
+from firebase_db import save_report_links, load_report_links, remove_report_links, save_user_data, search_user_id, load_user_data
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, ReplyKeyboardRemove
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, ConversationHandler, CallbackQueryHandler, CallbackContext
 from google.oauth2.service_account import Credentials
@@ -44,7 +44,6 @@ SERVICE_ACCOUNT_INFO = {
     "auth_provider_x509_cert_url": os.getenv("GOOGLE_AUTH_PROVIDER_CERT"),
     "client_x509_cert_url": os.getenv("GOOGLE_CLIENT_CERT_URL"),
 }
-# print(os.getenv("GOOGLE_PRIVATE_KEY"))
 
 # ✅ Debugging: Check if private key is loaded correctly
 if not SERVICE_ACCOUNT_INFO["private_key"].startswith("-----BEGIN PRIVATE KEY-----"):
@@ -72,6 +71,8 @@ WAITING_FOR_SEARCH_INPUT = 106  # 🔍 New state for search
 # Load existing file data or initialize an empty dictionary
 DATA_FILE = "file_data.json"
 report_links = {}
+active_conversations = {}
+
 # Global variable to store the code fetched from the API.
 code = None
 # Define the cancel button
@@ -142,6 +143,7 @@ def get_start_keyboard():
 # Add a new function to handle cancellation of the upload process
 async def cancel_upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Cancel the upload process and reset the conversation state."""
+    active_conversations[update.message.chat_id] = False
     await update.message.reply_text("⬆️ Upload process cancelled. You can start over with /upload.")
     return ConversationHandler.END
 
@@ -150,7 +152,7 @@ async def upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("🚫 You are not authorized to use this command.")
         return ConversationHandler.END
     await update.message.reply_text("♻️ Upload Process has Started...", reply_markup=get_cancel_keyboard(),parse_mode="Markdown")
-
+    active_conversations[update.message.chat_id] = True
     keyboard = [
         [InlineKeyboardButton("📁 One File", callback_data="upload_1")],
         [InlineKeyboardButton("📂 Two Files", callback_data="upload_2")],
@@ -163,6 +165,7 @@ async def upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # Handle the Cancel button
 async def handle_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle the Cancel button press."""
+    active_conversations[update.message.chat_id] = False
     await update.message.reply_text(
         "Upload process cancelled.",
         reply_markup=ReplyKeyboardRemove()  # Remove the custom keyboard
@@ -172,7 +175,6 @@ async def handle_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def upload_option_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-
     context.user_data["files"] = []
     if query.data == "upload_1":
         context.user_data["upload_limit"] = 1
@@ -188,6 +190,7 @@ async def upload_option_handler(update: Update, context: ContextTypes.DEFAULT_TY
 
 async def ask_file_count(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_input = update.message.text.strip()
+    active_conversations[update.message.chat_id] = True
     if not user_input.isdigit() or int(user_input) <= 2:
         await update.message.reply_text("❌ Please enter a number greater than 2.")
         return WAITING_FOR_MULTIPLE_FILES
@@ -199,6 +202,7 @@ async def ask_file_count(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def handle_multiple_files(update: Update, context: ContextTypes.DEFAULT_TYPE):
     document = update.message.document
+    active_conversations[update.message.chat_id] = True
     if not document:
         await update.message.reply_text("Please send a valid file.")
         return COLLECTING_FILES
@@ -222,6 +226,7 @@ async def handle_multiple_files(update: Update, context: ContextTypes.DEFAULT_TY
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """ Handle file upload from users """
     document = update.message.document
+    active_conversations[update.message.chat_id] = True
     if not document:
         await update.message.reply_text("No document detected. Please try again.")
         return WAITING_FOR_UPLOAD_OPTION
@@ -253,6 +258,7 @@ async def receive_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global code
     """ Receive payment amount and prompt for user ID """
     amount = update.message.text
+    active_conversations[update.message.chat_id] = True
     context.user_data["amount"] = amount
     await update.message.reply_text("👤 Enter the User ID:")
     return WAITING_FOR_USER
@@ -261,7 +267,7 @@ async def receive_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global code
     """ Ensure the entered user ID is an integer """
     user_id_text = update.message.text.strip()
-
+    active_conversations[update.message.chat_id] = True
     if not user_id_text.isdigit() or not (100000000 <= int(user_id_text) <= 9999999999):
         await update.message.reply_text("❌ Please enter a valid Telegram User ID (7–10 digits).")
         return WAITING_FOR_USER
@@ -273,6 +279,7 @@ async def receive_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     amount = context.user_data.get("amount")
 
     if "files" not in context.user_data or not context.user_data["files"]:
+        active_conversations[update.message.chat_id] = False
         await update.message.reply_text("🚫 No files found. Please restart with /upload.")
         return ConversationHandler.END
 
@@ -290,6 +297,7 @@ async def receive_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if not links:
         await update.message.reply_text("❌ Error uploading files to Google Drive.")
+        active_conversations[update.message.chat_id] = False
         return ConversationHandler.END
 
     # (Optional) Send multiple links or store them together
@@ -365,13 +373,45 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         chat_id = update.message.from_user.id
         user_id = str(chat_id)
         message = update.message  # Use the message from the regular update
+
+    # NEW CODE TO ADD:
+    full_name = f"{update.effective_user.first_name} {(update.effective_user.last_name or '')}".strip()
+    username = f"@{update.effective_user.username}" or "No username"
+    #find list of all existing users
+    existing_users = load_user_data()
+    # Check if user exists
+    if user_id not in existing_users:
+        user_type = "new"
+        save_user_data(user_id, full_name, username)
+        logger.info(f"✅ Added new user to Firestore: {full_name} ({username})")
+        await context.bot.send_message(
+            chat_id=ADMIN_ID,
+            text=f"🔰<b>NEW USER DETECTED!</b>🔰\n\n"
+                 f" Name: <code>{full_name}</code>\n"
+                 f"🔗 Username: {username}\n"
+                 f"🆔 User ID: <code>{user_id}</code>",
+            parse_mode="HTML"
+        )
+        await message.reply_text(
+            f"🔰*Welcome {full_name}!*🔰\n\n"
+            f"Thank you for joining us.\n\n"
+            f"📝 *How this works?*\n"
+            f"1️⃣ Once your report is ready, I’ll notify you here.\n"
+            f"2️⃣ You’ll receive secure download links after completing payment.\n\n"
+            f"🆘 If you have any questions, feel free to contact Admin *@coding_services*.\n\n",
+            parse_mode="Markdown"
+        )
+    else:
+        user_type = "old"
+        logger.info(f"✅ Existing user detected: {full_name} ({username})")
+
+    #check is there any user's report
     if user_id in report_links:
         payment_button_text = f"🚀Make Payment of Rs {report_links[user_id]['amount']}/-🚀"
         download_button_text = "📥 Download Report"
 
         payment_button = InlineKeyboardButton(payment_button_text, url=PAYMENT_URL)
         download_button = InlineKeyboardButton(download_button_text, callback_data=f"download_{user_id}")
-
         keyboard = [[payment_button], [download_button]]
         reply_markup = InlineKeyboardMarkup(keyboard)
 
@@ -386,7 +426,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="Markdown"
         )
     else:
-        await message.reply_text("🚫 There is no information about your report. Please contact Admin @coding_services.")
+        if user_type == "old":
+            await message.reply_text("🚫 There is no information about your report. Please contact Admin @coding_services.")
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -473,7 +514,6 @@ async def show_reports(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def delete_user_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.text.strip()
-    print(f"1. user_id;{type(user_id)}")
     report_links = load_report_links()  # Refresh from Firebase
     if user_id in report_links:
         remove_report_links(user_id)
@@ -483,39 +523,45 @@ async def delete_user_report(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await update.message.reply_text(f"⚠️ No data found for user ID {user_id}.")
     return ConversationHandler.END
 
-
 async def handle_forwarded_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    message = update.message
     user_id = update.message.from_user.id
+
     if user_id != ADMIN_ID:
         await update.message.reply_text("🚫 You are not authorized to use this command.")
-        return
+        return ConversationHandler.END
 
+    # check from the global variable
+    if active_conversations.get(user_id, False):
+        await update.message.reply_text(
+            "⚠️ Ongoing process cancelled due to forwarded message.",
+            reply_markup=ReplyKeyboardRemove()
+        )
+        active_conversations[user_id] = False
+        return_state = ConversationHandler.END
+    else:
+        return_state = None
+
+    # process the forwarded message as before
+    message = update.message
     if not message or not hasattr(message, 'forward_origin'):
-        return
+        return return_state
 
     origin = message.forward_origin
-    print(origin)
 
-    # Case 1: Forwarded from a visible user
-    if origin.type.name == "USER" and hasattr(origin, "sender_user"):
+    if origin and origin.type.name == "USER" and hasattr(origin, "sender_user"):
         user = origin.sender_user
-        print(user)
         full_name = f"{user.first_name} {user.last_name or ''}".strip()
         username = f"@{user.username}" if user.username else "No username"
         chat_id = user.id
 
         await message.reply_text(
             f"👤 <b>Forwarded User Info</b>\n\n"
-            f"🧾 Name: {full_name}\n"
+            f"🧾 Name: <code>{full_name}</code>\n"
             f"🔗 Username: {username}\n"
             f"🆔 User ID: <code>{chat_id}</code>",
             parse_mode="HTML"
         )
-
-    # Case 2: Forwarded from a hidden user
-    elif origin.type.name == "HIDDEN_USER" and hasattr(origin, "sender_user_name"):
-        print(origin.type)
+    elif origin and origin.type.name == "HIDDEN_USER" and hasattr(origin, "sender_user_name"):
         await message.reply_text(
             f"🚫 Forwarded from a user with privacy enabled.\n\n"
             f"🔗 User's Telegram Name: {origin.sender_user_name}",
@@ -523,6 +569,10 @@ async def handle_forwarded_message(update: Update, context: ContextTypes.DEFAULT
         )
     else:
         await message.reply_text("⚠️ Unable to identify forwarded user.")
+
+    return return_state if return_state is not None else ConversationHandler.END
+
+
 
 # ------------------ Send user info to admin when he/she send "Hi" or "hi" ------------------ #
 async def user_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -540,7 +590,7 @@ async def user_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await context.bot.send_message(
         chat_id=ADMIN_ID,
         text=f"👤 <b>User Info</b>\n\n"
-        f"🧾 Name: {full_name}\n"
+        f"🧾 Name: <code>{full_name}</code>\n"
         f"🔗 Username: {username}\n"
         f"🆔 User ID: <code>{user_id}</code>",
         parse_mode="HTML"
@@ -570,7 +620,7 @@ async def handle_user_search(update: Update, context: ContextTypes.DEFAULT_TYPE)
             text=(
                 f"🔍 <b>Search Result</b>\n\n"
                 f"🆔 User ID: <code>{user_id}</code>\n"
-                f"🧾 Name: {data.get('name')}\n"
+                f"🧾 Name: <code>{data.get('name')}</code>\n"
                 f"🔗 Username: {data.get('username')}"
             ),
             parse_mode="HTML"
@@ -591,8 +641,9 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 Commands available:
 /start - Check whether your report is ready or not
 /upload - Upload report (Admin only)
-/show_reports - Show list of all reports not downloaded by users (Admin only)
+/cancel - Cancel the current process (Admin only)
 /search_user - Search user by name or username (Admin only)
+/show_reports - Show list of all reports not downloaded by users (Admin only)
 /help - Show this help message
 """
     )
@@ -665,10 +716,11 @@ def main():
     application.add_handler(MessageHandler(filters.TEXT & filters.Regex(r'^(hi|Hi|hello|Hello)$'), user_info))
     # application.add_handler(CommandHandler("admin_commands", admin_commands))
     application.add_handler(CommandHandler("help", help_command))
+    application.add_handler(MessageHandler(filters.FORWARDED, handle_forwarded_message))
     application.add_handler(conv_handler_upload)
     application.add_handler(conv_handler_delete)
     application.add_handler(CallbackQueryHandler(button_handler))
-    application.add_handler(MessageHandler(filters.FORWARDED, handle_forwarded_message))
+    # application.add_handler(MessageHandler(filters.FORWARDED, handle_forwarded_message))
 
 
     application.run_polling()
