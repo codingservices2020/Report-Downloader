@@ -720,7 +720,13 @@ def main():
                 MessageHandler(filters.TEXT & ~filters.COMMAND, delete_user_report)
             ]
         },
-        fallbacks=[CommandHandler("cancel", cancel_upload)],
+        fallbacks=[
+            CommandHandler("start", start),  # Reset conversation if /start is issued
+            CommandHandler("upload", upload),  # Reset conversation if /upload is issued again
+            CommandHandler("help", help_command),  # Reset conversation if /help is issued
+            # CommandHandler("admin_commands", admin_commands),  # Reset conversation if /admin_commands is issued
+            MessageHandler(filters.COMMAND, cancel_upload),  # Reset conversation on any other command
+        ],
     )
 
     # Search user conversation
@@ -731,7 +737,13 @@ def main():
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_user_search)
             ]
         },
-        fallbacks=[CommandHandler("cancel", cancel_upload)],
+        fallbacks=[
+            CommandHandler("start", start),  # Reset conversation if /start is issued
+            CommandHandler("upload", upload),  # Reset conversation if /upload is issued again
+            CommandHandler("help", help_command),  # Reset conversation if /help is issued
+            # CommandHandler("admin_commands", admin_commands),  # Reset conversation if /admin_commands is issued
+            MessageHandler(filters.COMMAND, cancel_upload),  # Reset conversation on any other command
+        ],
     )
 
     application.add_handler(conv_handler_search)
