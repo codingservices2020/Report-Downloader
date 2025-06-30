@@ -65,7 +65,7 @@ WAITING_FOR_UPLOAD_OPTION, WAITING_FOR_MULTIPLE_FILES, COLLECTING_FILES = range(
 WAITING_FOR_PAYMENT, WAITING_FOR_USER = range(103, 105)
 WAITING_FOR_DELETE_ID = 105
 WAITING_FOR_SEARCH_INPUT = 106  # 🔍 New state for search
-
+WAITING_FOR_NAME = 107  # add this line
 
 
 # Load existing file data or initialize an empty dictionary
@@ -260,6 +260,14 @@ async def receive_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
     amount = update.message.text
     active_conversations[update.message.chat_id] = True
     context.user_data["amount"] = amount
+    await update.message.reply_text("✍️ Please enter the name of the user:")
+    return WAITING_FOR_NAME
+
+async def receive_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Receive name after amount"""
+    name = update.message.text.strip()
+    active_conversations[update.message.chat_id] = True
+    context.user_data["name"] = name
     await update.message.reply_text("👤 Enter the User ID:")
     return WAITING_FOR_USER
 
@@ -303,15 +311,19 @@ async def receive_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # (Optional) Send multiple links or store them together
     short_links = [short_link(link, f"{user_id}-{i + 1}") for i, link in enumerate(links)]
 
-    save_report_links(user_id, amount, short_links)  # Saving data online
+    name = context.user_data.get("name", "Unknown")
+    save_report_links(user_id, amount, short_links)
+    save_user_data(user_id, name, "no_username")  # save name, username optional
     # Refresh subscriptions from Firestore
     global report_links
     report_links = load_report_links()  # Refresh from Firebase
 
     links_formatted = "\n".join([f"📥 File {i + 1}: {link}" for i, link in enumerate(report_links[user_id]["links"])])
     # Send confirmation
-    await update.message.reply_text(f"<b>🔰FILE UPLOADED SUCCESSFULLY!🔰</b>\n\n"
-                                    f"✅ <a href='tg://user?id={user_id}'>User</a>'s report successfully uploaded.\n\n"
+    await update.message.reply_text(f"<b>🔰REPORT UPLOADED SUCCESSFULLY!🔰</b>\n\n"
+                                    # f"✅ <b>Name:</b> <a href='tg://user?id={user_id}'>{name}</a>'s report successfully uploaded.\n\n"
+                                    f"👤 <b>Name:</b> <a href='tg://user?id={user_id}'>{name}</a>\n"
+                                    f"💰 <b>Amount:</b> Rs {amount}/-\n\n"
                                     # f"⬇️ Download Link: {gdrive_link}\n\n"
                                    # f"⬇️ Download Link: {short_links}\n\n",
                                     f"<b>⬇️ Report Download Links:</b>\n{links_formatted}",
@@ -455,10 +467,12 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 parse_mode="HTML"
             )
             context.job_queue.run_once(delete_message, 0, data=(sent_message.chat.id, sent_message.message_id))
+            users = load_user_data()
+            name = users.get(user_id, {}).get("name", "Unknown")
             await context.bot.send_message(
                 chat_id=ADMIN_ID,
                 text=f"<b>🔰REPORT DELIVERED🔰</b>\n\n"
-                     f"✅ <a href='tg://user?id={user_id}'>User</a>-generated report's download link successfully.\n\n",
+                     f"✅ <a href='tg://user?id={user_id}'>{name}</a>-generated report's download link successfully.\n\n",
                 parse_mode="HTML"
             )
             DELETED_CODES_URL = f"{PAYMENT_CAPTURED_DETAILS_URL}/amount/{invoice_amount}"
@@ -672,6 +686,10 @@ def main():
             WAITING_FOR_PAYMENT: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, receive_payment),
                 MessageHandler(filters.Text([CANCEL_BUTTON]), handle_cancel),  # Handle Cancel button
+            ],
+            WAITING_FOR_NAME: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, receive_name),
+                MessageHandler(filters.Text([CANCEL_BUTTON]), handle_cancel),
             ],
             WAITING_FOR_USER: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, receive_user),
