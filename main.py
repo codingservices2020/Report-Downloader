@@ -9,11 +9,11 @@ from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 import warnings
-from keep_alive import keep_alive
-keep_alive()
+# from keep_alive import keep_alive
+# keep_alive()
 
-# from dotenv import load_dotenv
-# load_dotenv()
+from dotenv import load_dotenv
+load_dotenv()
 
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 # Enable logging
@@ -505,8 +505,10 @@ async def show_reports(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     messages = []
+    users = load_user_data()
     for chat_id, details in report_links.items():
-        user_link = f"User ID:<a href='tg://user?id={chat_id}'>{chat_id}</a>"
+        name = users.get(chat_id, {}).get("name", "Unknown")
+        # user_link = f"🆔 User ID:<a href='tg://user?id={chat_id}'>{chat_id}</a>"
         amount = details.get("amount", "N/A")
         links = details.get("links", [])
 
@@ -515,7 +517,12 @@ async def show_reports(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             link_lines = "🔗 No links found."
 
-        messages.append(f"{user_link}\n💰 Amount: Rs {amount}\n{link_lines}\n")
+        messages.append(
+            f"<b>👤 Name:</b> <a href='tg://user?id={chat_id}'> {name}</a>\n"
+            f"<b>🆔 User ID:</b> <code>{chat_id}</code>\n"
+            f"<b>💰 Amount:</b> Rs {amount}/-\n"
+            f"{link_lines}\n"
+        )
 
     final_report = "\n\n".join(messages)
     await update.message.reply_text(
