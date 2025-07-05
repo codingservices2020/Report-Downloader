@@ -10,3 +10,5 @@ google-auth>=2.6.0
 google-auth-oauthlib>=1.0.0
 google-auth-httplib2>=0.1.0
 firebase-admin>=6.6.0
+PyMuPDF>=1.23.0
+PyPDF2>=3.0.0
