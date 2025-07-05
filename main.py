@@ -2,6 +2,9 @@ import os
 import json
 import logging
 import requests
+import uuid
+import fitz  # PyMuPDF
+from PyPDF2 import PdfReader, PdfWriter  # Required for sign_pdf
 from firebase_db import save_report_links, load_report_links, remove_report_links, save_user_data, search_user_id, load_user_data
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, ReplyKeyboardRemove
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, ConversationHandler, CallbackQueryHandler, CallbackContext
@@ -22,6 +25,8 @@ logger = logging.getLogger(__name__)
 
 # Load environment variables
 TOKEN = os.getenv("TOKEN")
+PDF_PASSWORD = os.getenv("PDF_PASSWORD")
+SIGN_TEXT_1 = os.getenv("SIGN_TEXT_1")
 URL = f'https://api.telegram.org/bot{TOKEN}/getUpdates'
 GDRIVE_FOLDER_ID = os.getenv("GDRIVE_FOLDER_ID")
 ADMIN_ID = int(os.getenv("ADMIN_ID"))
@@ -72,12 +77,21 @@ WAITING_FOR_NAME = 107  # add this line
 DATA_FILE = "file_data.json"
 report_links = {}
 active_conversations = {}
+# Define folders for input and edited PDFs
+INPUT_FOLDER = "input_pdfs"
+OUTPUT_FOLDER = "edited_pdfs"
+
+# Ensure both folders exist
+os.makedirs(INPUT_FOLDER, exist_ok=True)
+os.makedirs(OUTPUT_FOLDER, exist_ok=True)
 
 # Global variable to store the code fetched from the API.
 code = None
 # Define the cancel button
 CANCEL_BUTTON = "🚫 Cancel"
 START_BUTTON = "🤖 Start the Bot"
+
+
 
 if os.path.exists(DATA_FILE):
     try:
@@ -94,6 +108,54 @@ def save_data():
     """Save the file data to JSON."""
     with open(DATA_FILE, "w") as f:
         json.dump(report_links, f, indent=4)
+
+def edit_pdf(input_pdf, output_pdf, output_pdf_name, selected_text):
+    doc = fitz.open(input_pdf)
+    page = doc[0]
+
+    hide_rect = fitz.Rect(30.0, 304.0, 600, 410)
+    page.draw_rect(hide_rect, color=(1, 1, 1), fill=(1, 1, 1))
+
+    rect = fitz.Rect(36, 329, 600, 400)
+    page.insert_textbox(rect, selected_text, fontsize=23, fontname="helvetica-bold", color=(0, 0, 0), align=0)
+
+    page.insert_text((36, 383), output_pdf_name, fontsize=17, fontname="helvetica-bold", color=(0, 0, 0))
+
+    if selected_text != SIGN_TEXT_1:
+        page.insert_text((402, 560), f"Digitally signed by {selected_text}", fontsize=8,
+                         fontname="times-italic", color=(1, 0, 0))
+    else:
+        rect = fitz.Rect(382, 680, 580, 740)
+        page.draw_rect(rect, color=(1, 0, 0))
+        page.insert_textbox(
+            rect,
+            f"\n  \t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\tDigitally signed by {selected_text}\n\n"
+            f" Contact to Coding Services for Plagiarism and AI checking report on telegram @coding_services.",
+            fontsize=8,
+            fontname="times-italic",
+            color=(0, 0, 0),
+            align=0
+        )
+
+    doc.save(output_pdf)
+    doc.close()
+
+
+def sign_pdf(pdf_file_path):
+    reader = PdfReader(pdf_file_path)
+    writer = PdfWriter()
+
+    for page in reader.pages:
+        writer.add_page(page)
+
+    signed_pdf_path = os.path.join("edited_pdfs", os.path.basename(pdf_file_path))
+
+    writer.encrypt(user_password="", owner_pwd=PDF_PASSWORD, permissions_flag=3)
+
+    with open(signed_pdf_path, "wb") as f_out:
+        writer.write(f_out)
+
+    return signed_pdf_path
 
 def verify_payment(chat_id,payment_amount):
     response = requests.get(url=PAYMENT_CAPTURED_DETAILS_URL)
@@ -203,22 +265,48 @@ async def ask_file_count(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_multiple_files(update: Update, context: ContextTypes.DEFAULT_TYPE):
     document = update.message.document
     active_conversations[update.message.chat_id] = True
+
     if not document:
         await update.message.reply_text("Please send a valid file.")
         return COLLECTING_FILES
 
     file = await context.bot.get_file(document.file_id)
     os.makedirs("downloads", exist_ok=True)
-    file_path = f"downloads/{document.file_name}"
-    await file.download_to_drive(file_path)
 
-    context.user_data["files"].append((file_path, document.file_name))
+    # Step 1: Download original file
+    original_file_path = f"downloads/{document.file_name}"
+    await file.download_to_drive(original_file_path)
 
+    # Step 2: Prepare filenames
+    file_base, _ = os.path.splitext(document.file_name)
+    edited_file_name = f"{file_base}{uuid.uuid4().hex[:1]}.pdf"
+    edited_file_path = f"downloads/{edited_file_name}"
+
+    # Step 3: Edit the PDF using SIGN_TEXT_1 from .env
+    selected_text = os.getenv("SIGN_TEXT_1", "Default Signature Text")
+    edit_pdf(original_file_path, edited_file_path, edited_file_name, selected_text)
+
+    # Step 4: Sign the edited PDF
+    signed_file_path = sign_pdf(edited_file_path)
+    signed_file_name = os.path.basename(signed_file_path)
+
+    # Step 5: Store the final signed PDF path and name
+    context.user_data["files"].append((signed_file_path, signed_file_name))
+
+    # Step 6: Clean up intermediate files
+    for path in [original_file_path, edited_file_path]:
+        if os.path.exists(path):
+            os.remove(path)
+
+    # Step 7: Check if all files are received
     if len(context.user_data["files"]) >= context.user_data["upload_limit"]:
         await update.message.reply_text("✅ All files received. Now enter payment amount:")
         return WAITING_FOR_PAYMENT
 
-    await update.message.reply_text(f"📒 File *{document.file_name}* received. Send next file...,", parse_mode="Markdown")
+    await update.message.reply_text(
+        f"📒 File *{document.file_name}* received and signed. Send next file...",
+        parse_mode="Markdown"
+    )
     return COLLECTING_FILES
 
 
@@ -302,6 +390,14 @@ async def receive_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
         gdrive_link = await upload_to_drive(path, name)
         if gdrive_link:
             links.append(gdrive_link)
+    # ✅ Delete signed PDF files after upload
+    for path, _ in context.user_data["files"]:
+        if os.path.exists(path):
+            try:
+                os.remove(path)
+                logger.info(f"🧹 Deleted signed file: {path}")
+            except Exception as e:
+                logger.warning(f"⚠️ Could not delete file {path}: {e}")
 
     if not links:
         await update.message.reply_text("❌ Error uploading files to Google Drive.")
